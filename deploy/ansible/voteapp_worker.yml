@@ -1,0 +1,94 @@
+---
+- name: provision voteapp worker
+  hosts: all
+  tasks:
+    - name: Install dotnet-sdk
+      win_chocolatey:
+        name:
+          - dotnet-6.0-sdk
+        state: present
+
+    - name: install dotnet-ef
+      ansible.windows.win_command: dotnet tool install --global dotnet-ef --version 6.0.7
+      ignore_errors: True
+
+    - name: download worker application artifact
+      ansible.windows.win_get_url:
+        url: https://corpdocs-2022.s3.eu-west-3.amazonaws.com/voteapp-worker.zip
+        dest: C:\voteapp-worker.zip
+
+    - name: extract worker application artifact
+      community.windows.win_unzip:
+        src: C:\voteapp-worker.zip
+        dest: C:\voteapp-worker
+
+    - name: write config
+      template:
+        src: appsettings.j2
+        dest: C:\voteapp-worker\appsettings.json
+
+    - name: publish dotnet app
+      ignore_errors: True
+      ansible.windows.win_command: dotnet publish --output C:\voteapp-worker
+      args:
+        chdir: C:\voteapp-worker
+        creates: C:\voteapp-worker\voteapp-worker.exe
+
+    - name: db migration
+      ansible.windows.win_command: dotnet ef database update
+      args:
+        chdir: C:\voteapp-worker
+
+    - name: create voteapp-worker service
+      ansible.windows.win_service:
+        name: VoteApp Worker Service
+        path: C:\voteapp-worker\vote-worker.exe
+        display_name: VoteApp Worker Service
+        description: VoteApp Worker Service
+        state: started
+
+    #######################################################################
+    # Command below install WedDAV and setup ASP execution
+    # Works on Windows 2016 Server
+    #######################################################################
+
+    - name: Install IIS
+      ansible.windows.win_powershell:
+        script: |
+          $feats = @("IIS-WebServerRole","IIS-WebServer","IIS-CommonHttpFeatures","IIS-HttpErrors","IIS-Security","IIS-RequestFiltering","IIS-WebServerManagementTools","IIS-DigestAuthentication","IIS-StaticContent","IIS-DefaultDocument","IIS-DirectoryBrowsing","IIS-WebDAV","IIS-BasicAuthentication","IIS-ManagementConsole");foreach ($feat in $feats) {Enable-WindowsOptionalFeature -Online -FeatureName $feat};
+
+    - name: Install WebDav
+      ansible.windows.win_powershell:
+        script: |
+          Install-WindowsFeature Web-DAV-Publishing
+          Restart-Service W3SVC
+          New-LocalGroup -Name "DavGroup"
+          Add-LocalGroupMember -Group "DavGroup" -Member "Administrators"
+          mkdir C:\webdav
+          New-WebVirtualDirectory -Site "Default Web Site" -Name "WebDAV" -PhysicalPath "C:\webdav"
+          Set-WebConfigurationProperty -Filter '/system.webServer/webdav/authoring' -Location "Default Web Site" -Name enabled -Value True
+          Set-WebConfigurationProperty -Filter '/system.webServer/security/authentication/basicAuthentication' -Location "Default Web Site/WebDAV" -Name enabled -Value True
+          Add-WebConfiguration -Filter "/system.webServer/webdav/authoringRules" -Location "Default Web Site/WebDAV" -Value @{path="*";roles="Administrators";access="Read,Write,Source"}
+          icacls "C:\webdav" /grant "DavGroup:(OI)(CI)(F)"
+          Set-WebConfigurationProperty -Filter '/system.webServer/directoryBrowse' -Location "Default Web Site/WebDAV" -Name enabled -Value True
+          Restart-WebItem -PSPath 'IIS:\Sites\Default Web Site'
+
+    - name: Install ASP and enable execution
+      ansible.windows.win_powershell:
+        script: |
+          dism /online /enable-feature /all /featurename:IIS-ASP
+          dism /online /enable-feature /all /featurename:IIS-ASPNET
+          dism /online /enable-feature /all /featurename:IIS-ASPNET45
+          set-webconfigurationproperty /system.webServer/security/authentication/anonymousAuthentication -Location "Default Web Site/WebDAV" -name userName -value ""
+          Restart-WebItem -PSPath 'IIS:\Sites\Default Web Site'
+
+    - name: Disable Defender realtime protection
+      ansible.windows.win_powershell:
+        script: |
+          Set-MpPreference -DisableRealtimeMonitoring $true
+
+    - name: Setup Windows admin user as the IIS default user
+      ansible.windows.win_powershell:
+        script: |
+          Import-Module WebAdministration
+          Set-ItemProperty IIS:\AppPools\DefaultAppPool -name processModel -value @{userName="{{ windows_username }}";password="{{ windows_password }}";identitytype=3}

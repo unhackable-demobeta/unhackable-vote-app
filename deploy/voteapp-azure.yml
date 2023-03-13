@@ -1,0 +1,245 @@
+# redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: voteapp-redis
+  name: voteapp-redis
+spec:
+  clusterIP: None
+  ports:
+  - name: voteapp-redis-service
+    port: 6379
+    targetPort: 6379
+  selector:
+    app: voteapp-redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: voteapp-redis
+  labels:
+    app: voteapp-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: voteapp-redis
+  template:
+    metadata:
+      labels:
+        app: voteapp-redis
+    spec:
+      containers:
+      - name: voteapp-redis
+        image: redis:alpine
+        ports:
+        - containerPort: 6379
+          name: voteapp-redis
+# db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: voteapp-db
+  name: voteapp-db
+spec:
+  clusterIP: None
+  ports:
+  - name: voteapp-db
+    port: 5432
+    targetPort: 5432
+  selector:
+    app: voteapp-db
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: voteapp-db
+  labels:
+    app: voteapp-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: voteapp-db
+  template:
+    metadata:
+      labels:
+        app: voteapp-db
+    spec:
+      containers:
+      - name: voteapp-db
+        image: postgres:14.4
+        env:
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          value: postgres
+        - name: POSTGRES_HOST_AUTH_METHOD
+          value: trust
+        ports:
+        - containerPort: 5432
+          name: voteapp-db
+        volumeMounts:
+        - name: db-data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: db-data
+        persistentVolumeClaim:
+          claimName: postgres-pv-claim
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pv-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: voteapp-result
+  labels:
+    app: voteapp-result
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-proxy-protocol: '*'
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: 'tcp'
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ports:
+  - name: voteapp-result-service
+    port: 5001
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: voteapp-result
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: voteapp-result
+  labels:
+    app: voteapp-result
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: voteapp-result
+  template:
+    metadata:
+      labels:
+        app: voteapp-result
+    spec:
+      containers:
+      - name: voteapp-result
+        image: gabelacework/voteapp-results-site
+        imagePullPolicy: Always
+        env:
+        - name: DATABASE_HOST
+          value: voteapp-db
+        ports:
+        - containerPort: 80
+          name: voteapp-result
+# vote
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: voteapp-vote
+  labels:
+    apps: voteapp-vote
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-proxy-protocol: '*'
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: 'tcp'
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ports:
+    - name: voteapp-vote-service
+      port: 80
+      protocol: TCP
+      targetPort: 80
+  selector:
+    app: voteapp-vote
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: voteapp-vote
+  labels:
+    app: voteapp-vote
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: voteapp-vote
+  template:
+    metadata:
+      labels:
+        app: voteapp-vote
+    spec:
+      containers:
+      - name: voteapp-vote
+        image: gabelacework/voteapp-website
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+        env:
+        - name: REDIS_HOST
+          value: voteapp-redis
+        ports:
+        - containerPort: 80
+          name: voteapp-vote
+# maintenance
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    apps: voteapp-maintenance
+  name: voteapp-maintenance
+spec:
+  clusterIP: None
+  selector:
+    app: voteapp-maintenance
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: voteapp-maintenance
+  name: voteapp-maintenance
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: voteapp-maintenance
+  template:
+    metadata:
+      labels:
+        app: voteapp-maintenance
+    spec:
+      containers:
+      - image: ubuntu
+        command: ["tail"]
+        args: ["-f","/dev/null"]
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          value: AKIA35U2TGKSG6XGJRNV
+        - name: AWS_SECRET_ACCESS_KEY
+          value: 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
+        - name: AWS_DEFAULT_REGION
+          value: us-west-2
+        name: voteapp-maintenance
