@@ -14,3 +14,4 @@ Major change listed here:
 * VoteApp now rates shoes instead of pets
 * VoteApp was changed to include 'hidden' hacker interface that allow for executing Python commands from the UI and API
 * Works has been ported to new binary that run on Windows on host instead of in a container
+* Marketing widget "added" for codesec demo
